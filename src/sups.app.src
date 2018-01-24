@@ -2,6 +2,7 @@
  [{description, "An OTP library"},
   {vsn, "0.1.0"},
   {registered, []},
+  {mod, {sups_app, []}},
   {applications,
    [kernel,
     stdlib

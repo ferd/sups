@@ -2,6 +2,7 @@
 -include_lib("proper/include/proper.hrl").
 -export([find_supervisors/0, find_supervisors/1, mark_as_dead/3]).
 -compile(export_all).
+-define(APPS, [sups]).
 
 % {modprote, [{permanent,
 %     {one_for_one,<0.170.0>,
@@ -41,56 +42,79 @@
 %-type model() :: {apptree(), [{dead | child_dead, supervisor_pid(), stamp()}]}.
 -export_type([apptree/0]).
 
-initial_state() -> {[], []}.
+initial_state() -> undefined.
 
-command({[], []}) ->
-    {call, ?MODULE, find_supervisors, [[inets, ssl, sups]]};
-command({AppTree, Deaths}) ->
+command(undefined) ->
+    {call, ?MODULE, find_supervisors, [?APPS]};
+command(State) ->
     oneof([
-        {call, ?MODULE, mark_as_dead, [AppTree, Deaths, non_neg_integer()]}
+       %{call, ?MODULE, mock_failure, [type_of_generation()]},
+        {call, ?MODULE, mark_as_dead, [State, non_neg_integer(), ?APPS]}
     ]).
 
-precondition({[], []}, {call, _, find_supervisors, _}) ->
+precondition(undefined, {call, _, find_supervisors, _}) ->
     true;
-precondition({State, _}, {call, _, mark_as_dead, _}) when State =/= [] ->
+precondition(State, {call, _, mark_as_dead, _}) when State =/= undefined ->
     true;
 precondition(_, _) ->
     false.
 
-postcondition({[], _}, {call, _, find_supervisors, _}, Apptree) ->
-    Apptree =/= [];
-postcondition({_, Deaths}, {call, _, mark_as_dead, _}, {ExpectedDead,NewTree}) ->
-    NewDeaths = ExpectedDead ++ Deaths,
+postcondition(_, {call, _, find_supervisors, _}, _Apptree) ->
+    true;
+    %Apptree =/= [];
+postcondition({OldTree, _Deaths}, {call, _, mark_as_dead, _}, {NewTree,NewDeaths}) ->
     MustBeMissing = extract_dead(NewDeaths),
-    Res = not_in_tree(NewTree, MustBeMissing),
-    if Res -> true;
-       not Res ->
-            io:format("not_in_tree(~p, ~p)~n", [NewTree, sets:to_list(MustBeMissing)]),
+    Res = unexpected_not_in_tree(NewTree, MustBeMissing)
+    andalso sups_still_living(OldTree, NewTree, MustBeMissing),
+    case Res of
+        true -> true;
+        false ->
+            io:format("res: ~p andalso ~p~n", [unexpected_not_in_tree(NewTree, MustBeMissing),
+                                               sups_still_living(OldTree, NewTree, MustBeMissing)]),
+            io:format("Old: ~p~n"
+                      "New: ~p~n"
+                      "Dead: ~p~n",
+                      [OldTree, NewTree, sets:to_list(MustBeMissing)]),
             false
-    end.
+    end;
+postcondition({OldTree, _Deaths}, {call, _, simulate_failure, _}, NewTree) ->
+    sups_still_living(OldTree, NewTree, sets:new()).
 
-next_state({[], Deaths}, AppTree, {call, _, find_supervisors, _}) ->
-    {AppTree, Deaths};
-next_state({_, Deaths}, {NewDeaths,NewTree}, {call, _, mark_as_dead, _}) ->
-    {NewTree, [NewDeaths|Deaths]}.
+next_state(undefined, AppTree, {call, _, find_supervisors, _}) ->
+    {AppTree, []};
+next_state(_State, NewState, {call, _, mark_as_dead, _}) ->
+    NewState.
 
 extract_dead(List) -> sets:from_list([Pid || {dead, Pid, _} <- List]).
 
-not_in_tree([], _) -> true;
-not_in_tree([{_Restart, noproc} | T], Set) ->
-    not_in_tree(T, Set);
-not_in_tree([{_Restart, {_Type, Pid}} | T], Set) ->
-    (not sets:is_element(Pid, Set)) andalso not_in_tree(T, Set);
-not_in_tree([{_Restart, {_, Pid, _, Children}} | T], Set) ->
+unexpected_not_in_tree([], _) -> true;
+unexpected_not_in_tree([{_Restart, noproc} | T], Set) ->
+    unexpected_not_in_tree(T, Set);
+unexpected_not_in_tree([{_Restart, {_Type, Pid}} | T], Set) ->
+    (not sets:is_element(Pid, Set)) andalso unexpected_not_in_tree(T, Set);
+unexpected_not_in_tree([{_Restart, {_, Pid, _, Children}} | T], Set) ->
     (not sets:is_element(Pid, Set))
-    andalso not_in_tree(Children, Set)
-    andalso not_in_tree(T, Set);
-not_in_tree([{_App, Sup}|T], Set) when is_list(Sup) ->
-    not_in_tree(Sup, Set) andalso not_in_tree(T, Set).
+    andalso unexpected_not_in_tree(Children, Set)
+    andalso unexpected_not_in_tree(T, Set);
+unexpected_not_in_tree([{_App, Sup}|T], Set) when is_list(Sup) ->
+    unexpected_not_in_tree(Sup, Set) andalso unexpected_not_in_tree(T, Set).
 
-mark_as_dead(Tree, Deaths, N) when is_list(Tree) ->
+sups_still_living(Old, New, ShouldBeDead) ->
+    OldSupPids = supervisor_pids(Old),
+    NewSupPids = supervisor_pids(New),
+    MustLive = OldSupPids -- sets:to_list(ShouldBeDead),
+    lists:all(fun(Pid) -> lists:member(Pid, NewSupPids) end, MustLive).
+
+mark_as_dead({Tree, Deaths}, N, Whitelist) when is_list(Tree) ->
     %% 1. find how many procs are in the tree,
-    M = count_procs(Tree)-1,
+    M = count_procs(Tree),
+    mark_as_dead({Tree, Deaths}, N, M, Whitelist).
+
+mark_as_dead(State, _, 0, _) ->
+    io:format("Null case, supervisor tree is gone or only root left~n", []),
+    State;
+mark_as_dead({Tree, Deaths}, N, Count, Whitelist) ->
+    M = Count-1,
     %% 2. mark them with numbers 0..M based on position (implicit)
     %% 3. mark the pid or supervisor at M-N rem M as dead (prioritize workers at first)
     ChosenN = M - (N rem M),
@@ -100,13 +124,13 @@ mark_as_dead(Tree, Deaths, N) when is_list(Tree) ->
     kill_and_wait(Pid), % should this be conditional in case a proc choice failed?
     %% 6. wait N milliseconds for propagation
     DeadSleep = lists:sum([case Dead of  % TODO: tweak
-                            dead -> 500;
+                            dead -> 250;
                             child_dead -> 100
                            end || {Dead, _, _} <- NewDeaths]),
     timer:sleep(DeadSleep), % very tolerant sups may be killed at random anyway
     %% 7. take a snapshot of the program tree and compare them
-    NewTree = find_supervisors(),
-    {NewDeaths, NewTree}.
+    NewTree = find_supervisors(Whitelist),
+    {NewTree, NewDeaths ++ Deaths}.
 
 count_procs([]) -> 0;
 count_procs([{_Restart, noproc} | T]) ->
@@ -116,8 +140,8 @@ count_procs([{_Restart, {_, _Pid, _, Children}}|T]) ->
     1 + count_procs(Children) + count_procs(T);
 count_procs([{_Restart, {_Type, _Pid}} | T]) ->
     1 + count_procs(T);
-count_procs([{App, Sup}|T]) when is_atom(App), is_list(Sup) ->
-    count_procs(Sup) + count_procs(T).
+count_procs([{App, [{_, {_, _, _, Children}}]}|T]) when is_atom(App) ->
+    count_procs(Children) + count_procs(T).
 
 kill_and_wait(Pid) ->
     Ref = erlang:monitor(process, Pid),
@@ -131,7 +155,7 @@ kill_and_wait(Pid) ->
 %% kill shots
 propagate_death([{_Restart, {_Type, Pid}}|_], _Deaths, 0) ->
     {Pid, [{dead, Pid, stamp()}]};
-propagate_death([{_Restart, {_Strategy, Pid, _, Children}}|_], _Deaths, 0) ->    
+propagate_death([{_Restart, {_Strategy, Pid, _, Children}}|_], _Deaths, 0) ->
     {Pid, [{dead, Pid, stamp()} | recursive_all_dead(Children)]};
 %% propagation
 propagate_death([], _Deaths, N) ->
@@ -147,12 +171,12 @@ propagate_death([{_Restart, {Strategy, Pid, Tolerance, Children}}|T], Deaths, N)
     end;
 propagate_death([{_Restart, {_Atom, _Pid}}|T], Deaths, N) ->
     propagate_death(T, Deaths, N-1);
-propagate_death([{App, Sup}|T], Deaths, N) when is_atom(App), is_list(Sup) ->
-    case propagate_death(Sup, Deaths, N) of
+propagate_death([{App, [{_,{Strategy,Pid,Tolerance,Children}}]}|T], Deaths, N) when is_atom(App) ->
+    case propagate_death(Children, Deaths, N) of
         {not_in_tree, NewN} ->
             propagate_death(T, Deaths, NewN);
-        {Pid, NewDeaths} ->
-            {Pid, NewDeaths}
+        {KillPid, NewDeaths} when is_pid(KillPid) ->
+            handle_child_death(Pid, KillPid, Strategy, Tolerance, NewDeaths, Deaths, Children)
     end.
 
 handle_child_death(Pid, KillPid, Strategy, {Intensity, Period}, NewDeaths, Deaths, Children) ->
@@ -172,7 +196,6 @@ handle_child_death(Pid, KillPid, Strategy, {Intensity, Period}, NewDeaths, Death
                         [{dead, Pid, Now} | all_dead(Children)]
                     ;  not ShouldDie ->
                         ShutdownPids = propagate(Strategy, DeadPids, Children),
-    %% TODO: ensure pids are deduped for deaths.
                         dedupe_append([ShutdownPids, DeadPids, NewDeaths])
                     end,
     {KillPid, CurrentDeaths}.
@@ -216,6 +239,14 @@ get_child_pids([]) -> [];
 get_child_pids([{_, noproc} | T]) -> get_child_pids(T);
 get_child_pids([{_, {_, Pid, _, _}} | T]) -> [Pid | get_child_pids(T)];
 get_child_pids([{_, {_, Pid}}|T]) -> [Pid | get_child_pids(T)].
+
+supervisor_pids([]) -> [];
+supervisor_pids([{_, noproc} | T]) -> supervisor_pids(T);
+supervisor_pids([{_, {_,_}} | T]) -> supervisor_pids(T);
+supervisor_pids([{_, {_, Pid, _, Children}} | T]) ->
+    [Pid | supervisor_pids(Children)] ++ supervisor_pids(T);
+supervisor_pids([{_, Sup} | T]) when is_list(Sup) ->
+    supervisor_pids(Sup) ++ supervisor_pids(T).
 
 get_subtree_pids([]) -> [];
 get_subtree_pids([{_, noproc} | T]) -> get_subtree_pids(T);
