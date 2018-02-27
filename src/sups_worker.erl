@@ -17,7 +17,12 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 handle_info(req, State) ->
-    catch sups_db_worker:req(req, infinity),
+    try sups_db_worker:req(req, infinity) of
+        {error, disconnected} -> ignore;
+        {ok,_} -> ok % good! request went through!
+    catch
+        _:_ -> ignore
+    end,
     self() ! req,
     {noreply, State}.
 
