@@ -10,11 +10,18 @@ req(Req, Timeout) ->
     gen_server:call(?MODULE, {req, Req}, Timeout).
 
 init([]) ->
-    {ok, undefined}.
+    put(sups_tags, [db]),
+    {ok, connected}.
 
-handle_call({req, Req}, _From, State) ->
+handle_call({req, _}, _From, disconnected = State) ->
+    {reply, {error, disconnected}, State};
+handle_call({req, Req}, _From, connected = State) ->
     timer:sleep(500),
-    {reply, {ok, Req}, State}.
+    {reply, {ok, Req}, State};
+handle_call(disconnect, _From, _) ->
+    {reply, ok, disconnected};
+handle_call(connect, _From, _) ->
+    {reply, ok, connected}.
 
 handle_cast(_, State) ->
     {noreply, State}.

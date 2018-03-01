@@ -10,7 +10,8 @@ command(undefined) ->
 command(State) ->
     oneof([
         {call, sups_lib, mock_success, [State, fun mock_db_call/0, fun unmock_db_call/0, ?APPS]},
-        {call, sups_lib, mark_as_dead, [State, non_neg_integer(), ?APPS]}
+        %{call, sups_lib, mark_as_dead, [State, non_neg_integer(), [], ?APPS]}
+        {call, sups_lib, mark_as_dead, [State, non_neg_integer(), [{not_tagged, db}], ?APPS]}
     ]).
 
 precondition(undefined, {call, _, find_supervisors, _}) ->
@@ -27,12 +28,12 @@ postcondition(_, {call, _, find_supervisors, _}, _Apptree) ->
     %Apptree =/= [];
 postcondition({OldTree, _Deaths}, {call, _, mark_as_dead, _}, {NewTree,NewDeaths}) ->
     MustBeMissing = sups_lib:extract_dead(NewDeaths),
-    Res = sups_lib:unexpected_not_in_tree(NewTree, MustBeMissing)
+    Res = sups_lib:dead_as_expected(NewTree, MustBeMissing)
     andalso sups_lib:sups_still_living(OldTree, NewTree, MustBeMissing),
     case Res of
         true -> true;
         false ->
-            io:format("res: ~p andalso ~p~n", [sups_lib:unexpected_not_in_tree(NewTree, MustBeMissing),
+            io:format("res: ~p andalso ~p~n", [sups_lib:dead_as_expected(NewTree, MustBeMissing),
                                                sups_lib:sups_still_living(OldTree, NewTree, MustBeMissing)]),
             io:format("Old: ~p~n"
                       "New: ~p~n"
@@ -53,10 +54,12 @@ next_state(_State, NewState, {call, _, mark_as_dead, _}) ->
     NewState.
 
 
+%% This is actually using a stub because the demo didn't quite like me flipping
+%% the switch super hard on a central process through meck and lotsa code loading.
 mock_db_call() ->
-    meck:expect(sups_db_worker, req, fun(_,_) -> {error, disconnected} end),
-    ok.
+    gen_server:call(sups_db_worker, disconnect, infinity),
+    100.
 
 unmock_db_call() ->
-    meck:delete(sups_db_worker, req, 2, false),
+    gen_server:call(sups_db_worker, connect, infinity),
     ok.

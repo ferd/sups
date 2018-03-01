@@ -5,6 +5,7 @@
 start_link() -> supervisor:start_link(?MODULE, []).
 
 init([]) ->
+    put(sups_tags, [db]),
     {ok, {#{strategy => one_for_one, intensity => 10, period => 1},
           [#{id => worker1,
              start => {sups_db_worker, start_link, []},

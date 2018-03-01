@@ -8,14 +8,17 @@ prop_check_tree() ->
             application:load(sasl),
             application:set_env(sasl, sasl_error_logger, false),
             {ok, Apps} = application:ensure_all_started(sups),
-            meck:new(sups_db_worker, [passthrough, no_history]),
             %% Tests
             {History, State, Result} = run_commands(sups_statem, Cmds),
             %% Post
-            meck:unload(),
             [application:stop(App) || App <- Apps],
             %% Reporting
             ?WHENFAIL(io:format("History: ~p\nState: ~p\nResult: ~p\n",
                                 [History,State,Result]),
-                      collect(length(Cmds), Result =:= ok))
+                      collect(bucket(length(Cmds), 10),
+                              Result =:= ok))
         end).
+
+bucket(N, M) ->
+    Base = N div M,
+    {Base*M, (Base+1)*M}.
