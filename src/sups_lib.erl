@@ -184,8 +184,8 @@ mark_as_dead({Tree, Deaths}, N, Count, Filters, Whitelist) ->
     kill_and_wait(Pid), % should this be conditional in case a proc choice failed?
     %% 6. wait a few milliseconds for propagation
     DeadSleep = lists:sum([case Dead of  % TODO: tweak
-                            dead -> 250;
-                            child_dead -> 100
+                            dead -> 150;
+                            child_dead -> 75
                            end || {Dead, _, _} <- NewDeaths]),
     timer:sleep(min(DeadSleep, 1000)), % very tolerant sups may be killed at random anyway
     %% 7. take a snapshot of the program tree and compare them
