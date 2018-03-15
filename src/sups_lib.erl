@@ -3,7 +3,6 @@
          mark_as_dead/4, mock_success/4,
          dead_as_expected/2, sups_still_living/3]).
 
-
 -type strategy() :: one_for_one | simple_one_for_one | rest_for_one | one_for_all.
 -type intensity() :: non_neg_integer().
 -type period() :: pos_integer().
@@ -20,7 +19,6 @@
 -type unmockfun() :: fun(() -> ok). 
 -type filter() :: {named|not_named, atom()} | {tagged|not_tagged, term()}.
 
-%-type model() :: {apptree(), [{dead | child_dead, supervisor_pid(), stamp()}]}.
 -export_type([apptree/0]).
 
 %%%%%%%%%%%%%%
@@ -189,7 +187,7 @@ mark_as_dead({Tree, Deaths}, N, Count, Filters, Whitelist) ->
                             dead -> 250;
                             child_dead -> 100
                            end || {Dead, _, _} <- NewDeaths]),
-    timer:sleep(DeadSleep), % very tolerant sups may be killed at random anyway
+    timer:sleep(min(DeadSleep, 1000)), % very tolerant sups may be killed at random anyway
     %% 7. take a snapshot of the program tree and compare them
     NewTree = find_supervisors(Whitelist),
     {NewTree, NewDeaths ++ Deaths}.
@@ -259,12 +257,7 @@ propagate_death([{_Restart, {Strategy, Pid, Tolerance, Children, Attrs}}|T], Dea
         true ->
             {Pid, [{dead, Pid, stamp()} | recursive_all_dead(Children)]};
         false ->
-            case propagate_death(Children, Deaths, 0, Filters) of
-                {not_in_tree, NewN} ->
-                    propagate_death(T, Deaths, NewN, Filters);
-                {KillPid, NewDeaths} when is_pid(KillPid) ->
-                    handle_child_death(Pid, KillPid, Strategy, Tolerance, NewDeaths, Deaths, Children)
-            end            
+            sup_propagation(Pid, Strategy, Tolerance, Children, T, Deaths, 0, Filters)
     end;
 %% propagation steps
 propagate_death([], _Deaths, N, _Filters) ->
@@ -277,21 +270,19 @@ propagate_death([{_Restart, {Strategy, Pid, Tolerance, Children, _Attrs}}|T], De
     %% supervisor (not the target). Propagate the kill signal, and if it comes
     %% back up to us and a child (direct or not) was the target, propagate
     %% the death to other siblings or even ourselves
-    case propagate_death(Children, Deaths, N-1, Filters) of
-        {not_in_tree, NewN} ->
-            propagate_death(T, Deaths, NewN, Filters);
-        {KillPid, NewDeaths} when is_pid(KillPid) ->
-            handle_child_death(Pid, KillPid, Strategy, Tolerance, NewDeaths, Deaths, Children)
-    end;
+    sup_propagation(Pid, Strategy, Tolerance, Children, T, Deaths, N-1, Filters);
 propagate_death([{_Restart, {_Atom, _Pid, _Attrs}}|T], Deaths, N, Filters) ->
     %% non-target worker
     propagate_death(T, Deaths, N-1, Filters);
 propagate_death([{App, [{_,{Strategy,Pid,Tolerance,Children,_Attrs}}]}|T], Deaths, N, Filters) when is_atom(App) ->
     %% Skip to the next app. Since we represent the root process of the app, we may
     %% need to do propagation of our own.
-    case propagate_death(Children, Deaths, N, Filters) of
+    sup_propagation(Pid, Strategy, Tolerance, Children, T, Deaths, N, Filters).
+
+sup_propagation(Pid, Strategy, Tolerance, Children, Rest, Deaths, Count, Filters) ->
+    case propagate_death(Children, Deaths, Count, Filters) of
         {not_in_tree, NewN} ->
-            propagate_death(T, Deaths, NewN, Filters);
+            propagate_death(Rest, Deaths, NewN, Filters);
         {KillPid, NewDeaths} when is_pid(KillPid) ->
             handle_child_death(Pid, KillPid, Strategy, Tolerance, NewDeaths, Deaths, Children)
     end.

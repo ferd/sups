@@ -9,9 +9,10 @@ command(undefined) ->
     {call, sups_lib, find_supervisors, [?APPS]};
 command(State) ->
     oneof([
-        {call, sups_lib, mock_success, [State, fun mock_db_call/0, fun unmock_db_call/0, ?APPS]},
-        %{call, sups_lib, mark_as_dead, [State, non_neg_integer(), [], ?APPS]}
-        {call, sups_lib, mark_as_dead, [State, non_neg_integer(), [{not_tagged, db}], ?APPS]}
+        {call, sups_lib, mock_success,
+         [State, fun mock_db_call/0, fun unmock_db_call/0, ?APPS]},
+        {call, sups_lib, mark_as_dead,
+         [State, non_neg_integer(), [{not_tagged, db}], ?APPS]}
     ]).
 
 precondition(undefined, {call, _, find_supervisors, _}) ->
@@ -25,19 +26,15 @@ precondition(_, _) ->
 
 postcondition(_, {call, _, find_supervisors, _}, _Apptree) ->
     true;
-    %Apptree =/= [];
 postcondition({OldTree, _Deaths}, {call, _, mark_as_dead, _}, {NewTree,NewDeaths}) ->
     MustBeMissing = sups_lib:extract_dead(NewDeaths),
     Res = sups_lib:dead_as_expected(NewTree, MustBeMissing)
     andalso sups_lib:sups_still_living(OldTree, NewTree, MustBeMissing),
     case Res of
-        true -> true;
+        true ->
+            true;
         false ->
-            io:format("res: ~p andalso ~p~n", [sups_lib:dead_as_expected(NewTree, MustBeMissing),
-                                               sups_lib:sups_still_living(OldTree, NewTree, MustBeMissing)]),
-            io:format("Old: ~p~n"
-                      "New: ~p~n"
-                      "Dead: ~p~n",
+            io:format("Old: ~p~nNew: ~p~nDead: ~p~n",
                       [OldTree, NewTree, sets:to_list(MustBeMissing)]),
             false
     end;

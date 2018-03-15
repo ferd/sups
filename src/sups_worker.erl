@@ -18,13 +18,16 @@ handle_cast(_, State) ->
 
 handle_info(req, State) ->
     case sups_db_worker:req(req, infinity) of
-        {error, disconnected} -> ignore;
-        {ok,_} -> ok % good! request went through!
-   %catch
-   %    E:R -> ignore
+        {ok, _} -> ok;
+        {error, disconnected} -> retry_later
     end,
     self() ! req,
     {noreply, State}.
 
 terminate(_, _) ->
     ok.
+
+%    case sups_db_worker:req(req, infinity) of
+%        {error, disconnected} -> ignore;
+%        {ok,_} -> ok % good! request went through!
+%    end,
