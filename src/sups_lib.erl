@@ -1,6 +1,7 @@
 -module(sups_lib).
--export([find_supervisors/0, find_supervisors/1, extract_dead/1,
+-export([find_supervisors/0, find_supervisors/1, init_state/0, init_state/1, extract_dead/1,
          mark_as_dead/4, mock_success/4,
+         validate_mark_as_dead/3, validate_mock_success/3,
          dead_as_expected/2, sups_still_living/3]).
 
 -type strategy() :: one_for_one | simple_one_for_one | rest_for_one | one_for_all.
@@ -37,6 +38,16 @@ find_supervisors(Whitelist) ->
     [{App, [{permanent, dig_sup(P)}]}
      || {App,P} <- root_sups(),
         Whitelist =:= [] orelse lists:member(App, Whitelist)].
+
+%% @doc wrapper to initialize the state in a PropEr statem test so that other functions get the
+%% right state.
+-spec init_state() -> {apptree(), []}.
+init_state() -> {find_supervisors(), []}.
+
+%% @doc wrapper to initialize the state in a PropEr statem test so that other functions get the
+%% right state. Takes a whitelist of applications to damage and test.
+-spec init_state([atom()]) -> {apptree(), []}.
+init_state(WhiteList) -> {find_supervisors(WhiteList), []}.
 
 %% @doc from a list of death events, extract the pids that are definitely dead
 %% under the form of a set for quick matching
@@ -78,6 +89,35 @@ mock_success({Tree, Deaths}, Mock, Unmock, Whitelist) when is_list(Tree) ->
     NewTree = find_supervisors(Whitelist),
     {NewTree, Deaths}.
 
+%% @doc Recommended validation helper for `mark_as_dead' function;
+%% checks that the processes that were expected to die are actually gone,
+%% and that the supervisors in unrelated subtrees are unaffected. This should
+%% capture unhandled expected faults in subtrees.
+%% Outputs the old tree, the new tree, and the expected missing processes in
+%% case a counter-example.
+-spec validate_mark_as_dead(apptree(), apptree(), [death_event()]) -> boolean().
+validate_mark_as_dead(OldTree, NewTree, NewDeaths) ->
+    MustBeMissing = extract_dead(NewDeaths),
+    Res = dead_as_expected(NewTree, MustBeMissing)
+    andalso sups_still_living(OldTree, NewTree, MustBeMissing),
+    case Res of
+        true ->
+            true;
+        false ->
+            io:format("Old: ~p~nNew: ~p~nDead: ~p~n",
+                      [OldTree, NewTree, sets:to_list(MustBeMissing)]),
+            false
+    end.
+
+%% @doc Recommended validation helper for `mock_success' function;
+%% Checks that no supervisor has unexpectedly died, which would capture
+%% a massive failure subsequent to a fault injection that would have been
+%% considered survivable.
+-spec validate_mock_success(apptree(), apptree(), [death_event()]) -> boolean().
+validate_mock_success(OldTree, NewTree, NewDeaths) ->
+    %% Should not see any deaths on a successful call.
+    MustBeMissing = extract_dead(NewDeaths),
+    sups_still_living(OldTree, NewTree, MustBeMissing).
 
 %% @doc Takes a supervision tree model and ensures that none of the
 %% processes in `Set' are to be found in it.
